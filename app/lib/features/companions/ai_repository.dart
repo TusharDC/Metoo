@@ -32,12 +32,18 @@ class AiRepository {
   /// Record a swipe. like/superlike silently queues a match that reveals later
   /// in the Matches tab (3-5 min, superlike faster). No instant popup.
   Future<void> swipe(int characterId, String action) async {
-    if (AppConfig.demo) return _demo.swipe(characterId, action);
+    if (AppConfig.demo) {
+      _demo.swipe(characterId, action);
+      return;
+    }
     await Db.client.rpc('ai_swipe', params: {'p_character_id': characterId, 'p_action': action});
   }
 
   Future<void> resetSwipes() async {
-    if (AppConfig.demo) return _demo.resetSwipes();
+    if (AppConfig.demo) {
+      _demo.resetSwipes();
+      return;
+    }
     await Db.client.rpc('reset_ai_swipes');
   }
 
@@ -55,7 +61,10 @@ class AiRepository {
   }
 
   Future<void> setMood(String conversationId, String mood) async {
-    if (AppConfig.demo) return _demo.setMood(conversationId, mood);
+    if (AppConfig.demo) {
+      _demo.setMood(conversationId, mood);
+      return;
+    }
     await Db.client.rpc('set_ai_mood', params: {'p_conversation': conversationId, 'p_mood': mood});
   }
 

@@ -21,7 +21,8 @@ class ProfileRepository {
     bool complete = false,
   }) async {
     if (AppConfig.demo) {
-      return DemoStore.instance.saveProfile(displayName: displayName, bio: bio);
+      DemoStore.instance.saveProfile(displayName: displayName, bio: bio);
+      return;
     }
     await Db.client.rpc('save_profile', params: {
       'p_display_name': displayName,
@@ -56,7 +57,10 @@ class ProfileRepository {
   }
 
   Future<void> setInterests(List<String> slugs) async {
-    if (AppConfig.demo) return DemoStore.instance.setInterests(slugs);
+    if (AppConfig.demo) {
+      DemoStore.instance.setInterests(slugs);
+      return;
+    }
     await Db.client.rpc('set_my_interests', params: {'p_slugs': slugs});
   }
 
@@ -100,7 +104,10 @@ class ProfileRepository {
   }
 
   Future<void> setDiscoverable(bool value) async {
-    if (AppConfig.demo) return DemoStore.instance.setSetting('is_discoverable', value);
+    if (AppConfig.demo) {
+      DemoStore.instance.setSetting('is_discoverable', value);
+      return;
+    }
     await Db.client.from('profiles').update({'is_discoverable': value}).eq('id', Db.uid!);
   }
 }
