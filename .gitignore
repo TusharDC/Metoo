@@ -1,0 +1,22 @@
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/.packages
+app/pubspec.lock
+app/android/
+app/ios/
+app/.idea/
+*.iml
+
+# Env / secrets
+.env
+*.env
+app/env.json
+**/secrets.*
+# anchored to any depth: the real path is backend/supabase/.temp/
+**/supabase/.temp/
+
+# OS
+.DS_Store
