@@ -79,6 +79,20 @@ Deno.serve(async (req) => {
   if (!conv || conv.user_id !== user.id) return json({ error: "not found" }, 404);
   const character = (conv as any).ai_characters;
 
+  // Paywall. Checked and consumed BEFORE any paid API call, so a blocked user
+  // never costs us an LLM request, and a tampered client cannot reach Claude.
+  const { data: verdict, error: quotaErr } = await admin
+    .rpc("consume_message", { p_user: user.id });
+  if (quotaErr) return json({ error: "quota check failed" }, 500);
+  if (!verdict?.allowed) {
+    return json({
+      error: "payment_required",
+      reason: verdict?.reason ?? "out_of_messages",
+      messages_left: 0,
+    }, 402);
+  }
+  const messagesLeft = verdict.messages_left ?? null;
+
   // Recent history (last 24 turns) + long-term memory (most recent 30 facts).
   const { data: history } = await admin
     .from("ai_messages")
@@ -144,7 +158,7 @@ Deno.serve(async (req) => {
   // @ts-ignore EdgeRuntime is provided by the Supabase runtime
   EdgeRuntime.waitUntil(extractMemory(admin, conversation_id, message, text));
 
-  return json({ text, voice_path });
+  return json({ text, voice_path, messages_left: messagesLeft });
 });
 
 async function synthesizeVoice(admin: any, uid: string, voiceId: string, text: string): Promise<string> {
