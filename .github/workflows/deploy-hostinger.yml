@@ -1,0 +1,104 @@
+name: Deploy to Hostinger
+
+# Builds the web app and uploads it to Hostinger over FTPS on every push.
+#
+# Requires three repository secrets (Settings -> Secrets and variables ->
+# Actions -> New repository secret):
+#   FTP_SERVER    e.g. ftp.ruderthanrude.com
+#   FTP_USERNAME  e.g. u726613050.deploy
+#   FTP_PASSWORD  that account's password
+#
+# Use an FTP account scoped to public_html, not your main hosting login.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: "Demo build (no Supabase needed)"
+        type: boolean
+        default: true
+      supabase_url:
+        description: "Supabase URL (only for a live build)"
+        required: false
+      supabase_anon_key:
+        description: "Supabase anon key (only for a live build)"
+        required: false
+
+concurrency:
+  group: hostinger-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # Served from the domain root here, so base href is "/".
+      - name: Build web
+        run: |
+          if [ "${{ inputs.demo }}" = "false" ]; then
+            flutter build web --release --base-href "/" \
+              --dart-define=SUPABASE_URL='${{ inputs.supabase_url }}' \
+              --dart-define=SUPABASE_ANON_KEY='${{ inputs.supabase_anon_key }}'
+          else
+            flutter build web --release --base-href "/" --dart-define=DEMO=true
+          fi
+
+      # Apache needs an SPA rewrite or deep links 404, and the bootstrap files
+      # must not be cached or users keep the old app after a deploy.
+      - name: Write .htaccess
+        run: |
+          cat > build/web/.htaccess <<'HTACCESS'
+          <IfModule mod_rewrite.c>
+            RewriteEngine On
+            RewriteBase /
+            RewriteRule ^index\.html$ - [L]
+            RewriteCond %{REQUEST_FILENAME} !-f
+            RewriteCond %{REQUEST_FILENAME} !-d
+            RewriteRule . /index.html [L]
+          </IfModule>
+
+          <FilesMatch "(index\.html|flutter_service_worker\.js|flutter_bootstrap\.js|version\.json)$">
+            <IfModule mod_headers.c>
+              Header set Cache-Control "no-cache, no-store, must-revalidate"
+            </IfModule>
+          </FilesMatch>
+
+          <IfModule mod_expires.c>
+            ExpiresActive On
+            ExpiresByType application/javascript "access plus 1 year"
+            ExpiresByType image/png "access plus 1 year"
+          </IfModule>
+
+          AddType application/wasm .wasm
+          AddType application/octet-stream .bin
+          HTACCESS
+          cp build/web/index.html build/web/404.html
+
+      # security: loose — Hostinger's shared FTPS cert does not match the
+      # per-domain hostname. The transfer is still TLS-encrypted.
+      - name: Upload to Hostinger
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          security: loose
+          local-dir: ./app/build/web/
+          server-dir: ./
+          dangerous-clean-slate: false
