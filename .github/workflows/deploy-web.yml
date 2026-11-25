@@ -27,6 +27,11 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  # Set to the custom domain to serve the site at the root of it. Leave empty
+  # to serve from https://<owner>.github.io/<repo>/ instead.
+  CUSTOM_DOMAIN: ruderthanrude.com
+
 # Let a newer push supersede an in-flight deploy.
 concurrency:
   group: pages
@@ -52,11 +57,12 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
-      # Pages serves the site from /<repo>/, so the base href must match or
-      # every asset 404s.
+      # With a custom domain the site is served from the root, so base href is
+      # "/". Without one, Pages serves from /<repo>/ and the base href must
+      # match or every asset 404s.
       - name: Build web
         run: |
-          BASE="/${GITHUB_REPOSITORY#*/}/"
+          if [ -n "${CUSTOM_DOMAIN}" ]; then BASE="/"; else BASE="/${GITHUB_REPOSITORY#*/}/"; fi
           echo "base href: $BASE"
           if [ "${{ inputs.demo }}" = "false" ]; then
             flutter build web --release --base-href "$BASE" \
@@ -71,6 +77,12 @@ jobs:
       # makes deep links resolve to the app instead of a GitHub error page.
       - name: Add SPA fallback
         run: cp build/web/index.html build/web/404.html
+
+      # Pages needs a CNAME file in the artifact or it drops the custom domain
+      # on each deploy.
+      - name: Write CNAME
+        if: env.CUSTOM_DOMAIN != ''
+        run: echo "${CUSTOM_DOMAIN}" > build/web/CNAME
 
       - uses: actions/configure-pages@v5
 
