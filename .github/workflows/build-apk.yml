@@ -82,6 +82,17 @@ jobs:
               print("added INTERNET permission")
           PY
 
+      # path_provider_android and shared_preferences_android pull in
+      # package:jni, which has native C++ and so forces an NDK download.
+      # Pre-install it so the Gradle run doesn't stall fetching it.
+      - name: Pre-install the Android NDK
+        run: |
+          NDK_VER=$(grep -oE 'ndkVersion\s*=\s*"[0-9.]+"' android/app/build.gradle.kts | grep -oE '[0-9.]+' || true)
+          if [ -z "$NDK_VER" ]; then NDK_VER=28.2.13676358; fi
+          echo "Installing NDK $NDK_VER"
+          yes | sdkmanager --install "ndk;$NDK_VER" >/dev/null || \
+            echo "sdkmanager could not pre-install the NDK; Gradle will fetch it"
+
       - name: Resolve dependencies
         run: flutter pub get
 
