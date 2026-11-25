@@ -1,5 +1,5 @@
--- Shararat — full backend bundle. Paste into Supabase SQL editor and Run.
--- Generated from migrations 0001-0007 + seed, in order.
+-- Shararat — full backend bundle. Paste into the Supabase SQL editor and Run.
+-- Generated from migrations 0001-0010 + seed, in order.
 
 -- ========================= migrations/0001_schema.sql =========================
 -- ============================================================================
@@ -909,6 +909,233 @@ insert into ai_characters (slug, name, tagline, bio, personality, system_prompt,
   '#1ABC9C', 'playful', '["music lover","laid-back","effortless"]', 6
 )
 on conflict (slug) do nothing;
+
+-- ========================= migrations/0008_ai_tinder.sql =========================
+-- ============================================================================
+-- Shararat — "AI Tinder" loop
+-- Discover becomes a swipe deck of AI characters. Right-swipe (like) = instant
+-- match: a conversation is created and her AI personality chats. Left-swipe
+-- (pass) just records the decision so she won't reappear.
+-- ============================================================================
+
+-- One decision per (user, character). Reuses the existing swipe_action enum.
+create table if not exists ai_swipes (
+  user_id      uuid not null references profiles(id) on delete cascade,
+  character_id smallint not null references ai_characters(id) on delete cascade,
+  action       swipe_action not null,
+  created_at   timestamptz not null default now(),
+  primary key (user_id, character_id)
+);
+alter table ai_swipes enable row level security;
+drop policy if exists ai_swipes_self on ai_swipes;
+create policy ai_swipes_self on ai_swipes
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- Deck of AI girls the user hasn't swiped yet.
+create or replace function get_ai_discover_feed(p_limit int default 20)
+returns setof jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', c.id, 'slug', c.slug, 'name', c.name, 'tagline', c.tagline, 'bio', c.bio,
+    'personality', c.personality, 'avatar_path', c.avatar_path,
+    'accent_color', c.accent_color, 'default_mood', c.default_mood, 'traits', c.traits
+  )
+  from ai_characters c
+  where c.is_active
+    and not exists (
+      select 1 from ai_swipes s where s.user_id = auth.uid() and s.character_id = c.id
+    )
+  order by c.sort_order, c.id
+  limit greatest(1, least(p_limit, 50));
+$$;
+
+-- Record a swipe. Like/superlike -> instant match (conversation created).
+create or replace function ai_swipe(p_character_id smallint, p_action swipe_action)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v uuid := auth.uid(); cid uuid;
+begin
+  insert into ai_swipes(user_id, character_id, action)
+  values (v, p_character_id, p_action)
+  on conflict (user_id, character_id) do update set action = excluded.action;
+
+  if p_action = 'pass' then
+    return jsonb_build_object('matched', false, 'conversation_id', null);
+  end if;
+
+  insert into ai_conversations(user_id, character_id, mood)
+  values (v, p_character_id, (select default_mood from ai_characters where id = p_character_id))
+  on conflict (user_id, character_id) do update set mood = ai_conversations.mood
+  returning id into cid;
+
+  return jsonb_build_object('matched', true, 'conversation_id', cid);
+end; $$;
+
+-- Dev/testing convenience: clear my swipes so the deck refills.
+create or replace function reset_ai_swipes()
+returns void language sql security definer set search_path = public as $$
+  delete from ai_swipes where user_id = auth.uid();
+$$;
+
+grant execute on function get_ai_discover_feed(int), ai_swipe(smallint, swipe_action),
+  reset_ai_swipes to authenticated;
+
+-- ========================= migrations/0009_delayed_match.sql =========================
+-- ============================================================================
+-- Shararat — delayed matches
+-- Right-swipe no longer pops an instant match. Instead the match "reveals" after
+-- a random 3-5 minute delay (superlike ~30-60s) and appears in the Matches tab.
+-- Implemented purely with a `revealed_at` timestamp — no background job needed:
+-- the Matches list simply filters `revealed_at <= now()`.
+-- ============================================================================
+
+alter table ai_conversations
+  add column if not exists revealed_at timestamptz not null default now();
+
+-- Re-point ai_swipe: like/superlike creates a conversation revealed in the future.
+-- Returns {queued: true} (the client shows no popup).
+create or replace function ai_swipe(p_character_id smallint, p_action swipe_action)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v uuid := auth.uid();
+  delay_secs int;
+begin
+  insert into ai_swipes(user_id, character_id, action)
+  values (v, p_character_id, p_action)
+  on conflict (user_id, character_id) do update set action = excluded.action;
+
+  if p_action = 'pass' then
+    return jsonb_build_object('queued', false);
+  end if;
+
+  -- superlike reveals quickly (30-60s); a normal like takes 3-5 min.
+  delay_secs := case when p_action = 'superlike'
+                     then 30 + floor(random() * 31)::int
+                     else 180 + floor(random() * 121)::int end;
+
+  insert into ai_conversations(user_id, character_id, mood, revealed_at)
+  values (v, p_character_id,
+          (select default_mood from ai_characters where id = p_character_id),
+          now() + (delay_secs || ' seconds')::interval)
+  on conflict (user_id, character_id) do nothing;
+
+  return jsonb_build_object('queued', true);
+end; $$;
+
+-- Directly-opened conversations (Companions grid) should be visible immediately.
+create or replace function start_ai_conversation(p_character_id smallint, p_mood text default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare cid uuid;
+begin
+  insert into ai_conversations(user_id, character_id, mood, revealed_at)
+  values (auth.uid(), p_character_id, p_mood, now())
+  on conflict (user_id, character_id)
+  do update set mood = coalesce(p_mood, ai_conversations.mood), revealed_at = least(ai_conversations.revealed_at, now())
+  returning id into cid;
+  return cid;
+end; $$;
+
+-- The Matches tab: revealed conversations with character + last message.
+create or replace function get_ai_matches()
+returns setof jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'conversation_id', c.id,
+    'revealed_at', c.revealed_at,
+    'character', jsonb_build_object(
+      'id', ch.id, 'slug', ch.slug, 'name', ch.name, 'tagline', ch.tagline,
+      'bio', ch.bio, 'personality', ch.personality, 'avatar_path', ch.avatar_path,
+      'accent_color', ch.accent_color, 'default_mood', ch.default_mood, 'traits', ch.traits),
+    'last_message', (
+      select jsonb_build_object('role', m.role, 'kind', m.kind, 'content', m.content, 'created_at', m.created_at)
+      from ai_messages m where m.conversation_id = c.id order by m.created_at desc limit 1),
+    'is_new', not exists (select 1 from ai_messages m where m.conversation_id = c.id)
+  )
+  from ai_conversations c
+  join ai_characters ch on ch.id = c.character_id
+  where c.user_id = auth.uid() and c.revealed_at <= now()
+  order by coalesce(c.last_message_at, c.revealed_at) desc;
+$$;
+
+grant execute on function ai_swipe(smallint, swipe_action),
+  start_ai_conversation(smallint, text), get_ai_matches to authenticated;
+
+-- ========================= migrations/0010_roster_12.sql =========================
+-- ============================================================================
+-- Shararat — the canonical 12-girl roster
+-- Supersedes the six personas seeded in 0007. Those are deactivated rather
+-- than deleted, so any existing conversations with them survive (ai_conversations
+-- references ai_characters on delete cascade).
+--
+-- Mirrors backend/scripts/roster.json, which is also what generate_models.py
+-- uses to produce each avatar. Run that script after this migration to fill in
+-- avatar_path; until then the app falls back to an accent-colour gradient card.
+-- ============================================================================
+
+-- Retire the 0007 personas from the deck.
+update ai_characters
+set is_active = false
+where slug in ('aarya', 'divya', 'ishita', 'meher', 'nyra', 'zoya');
+
+insert into ai_characters
+  (slug, name, tagline, bio, personality, system_prompt, accent_color, default_mood, traits, sort_order)
+values
+('aanya', 'Aanya', 'bubbly · flirty · foodie', '23 • Delhi', 'bubbly · flirty · foodie',
+ 'You are Aanya, a bubbly Delhi girl who loves cafe-hopping, street food and trendy fashion. Playful and a little flirty, quick with jokes.',
+ '#FF6F61', 'playful', '["cafe hopping","fashion","foodie"]', 10),
+
+('ishaa', 'Ishaa', 'confident · sassy · ambitious', '24 • Mumbai', 'confident · sassy · ambitious',
+ 'You are Ishaa, a confident, ambitious Mumbai girl with model vibes. Sassy and witty, you love the city''s nightlife and banter.',
+ '#E74C3C', 'mischievous', '["modeling","nightlife","ambition"]', 11),
+
+('riya', 'Riya', 'nerdy-cute · witty · curious', '22 • Bengaluru', 'nerdy-cute · witty · curious',
+ 'You are Riya, a cute nerdy techie from Bengaluru. Witty and curious, you love coffee, gaming and geeking out, but you''re secretly a hopeless romantic.',
+ '#1ABC9C', 'playful', '["tech","gaming","coffee"]', 12),
+
+('meera', 'Meera', 'graceful · soulful · calm', '25 • Chennai', 'graceful · soulful · calm',
+ 'You are Meera, a graceful classical dancer from Chennai. Calm, soulful and a little old-fashioned romantic, you speak softly and notice small things.',
+ '#9B59B6', 'slow burn', '["classical dance","poetry","art"]', 13),
+
+('simran', 'Simran', 'fun · warm · foodie', '23 • Chandigarh', 'fun · warm · foodie',
+ 'You are Simran, a fun-loving warm Punjabi kudi from Chandigarh. You love food, bhangra and road trips, and you tease with a big dimpled smile.',
+ '#F39C12', 'playful', '["bhangra","foodie","road trips"]', 14),
+
+('ananya', 'Ananya', 'artsy · poetic · deep', '24 • Kolkata', 'artsy · poetic · deep',
+ 'You are Ananya, an artsy Bengali girl from Kolkata who loves poetry, rainy evenings and old films. Thoughtful and a little mysterious.',
+ '#6C7A89', 'slow burn', '["art","poetry","rain"]', 15),
+
+('tara', 'Tara', 'free-spirited · chill · adventurous', '22 • Goa', 'free-spirited · chill · adventurous',
+ 'You are Tara, a free-spirited Goan girl who lives for the beach, music and spontaneous adventures. Chill, warm and a bit of a flirt.',
+ '#16A085', 'playful', '["beach","surfing","music"]', 16),
+
+('naina', 'Naina', 'elegant · poised · warm', '25 • Jaipur', 'elegant · poised · warm',
+ 'You are Naina, an elegant girl from Jaipur with royal poise. Warm underneath, you love old havelis, photography and quiet conversations over chai.',
+ '#C0392B', 'slow burn', '["heritage","photography","tea"]', 17),
+
+('pari', 'Pari', 'sweet · gentle · shy', '23 • Lucknow', 'sweet · gentle · shy',
+ 'You are Pari, a sweet gentle girl from Lucknow with old-world tehzeeb. Soft-spoken and a little shy, you warm up with sincerity and shy smiles.',
+ '#F8A5C2', 'slow burn', '["poetry","cooking","music"]', 18),
+
+('avni', 'Avni', 'chirpy · driven · bubbly', '24 • Ahmedabad', 'chirpy · driven · bubbly',
+ 'You are Avni, a chirpy, driven Gujarati girl running your own little business. Bubbly and ambitious, you flirt with playful confidence.',
+ '#E67E22', 'playful', '["startup","dandiya","travel"]', 19),
+
+('kiara', 'Kiara', 'edgy · cool · indie', '22 • Manipur', 'edgy · cool · indie',
+ 'You are Kiara, an edgy cool girl from Manipur into indie music, sneakers and street art. Playfully teasing with an effortless cool vibe.',
+ '#8E44AD', 'mischievous', '["indie music","sneakers","art"]', 20),
+
+('sana', 'Sana', 'mysterious · poetic · warm', '24 • Srinagar', 'mysterious · poetic · warm',
+ 'You are Sana, a soft-spoken Kashmiri girl with striking eyes. Poetic and a little mysterious, you love chai, mountains and late-night conversations.',
+ '#2980B9', 'slow burn', '["poetry","chai","mountains"]', 21)
+
+on conflict (slug) do update set
+  name          = excluded.name,
+  tagline       = excluded.tagline,
+  bio           = excluded.bio,
+  personality   = excluded.personality,
+  system_prompt = excluded.system_prompt,
+  accent_color  = excluded.accent_color,
+  default_mood  = excluded.default_mood,
+  traits        = excluded.traits,
+  sort_order    = excluded.sort_order,
+  is_active     = true;
 
 -- ========================= seed.sql =========================
 -- Interest tags used during onboarding / profile editing + discovery filtering.
