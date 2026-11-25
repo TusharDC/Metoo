@@ -31,10 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Java 21, not 17: AGP's bundled lint calls List.removeLast(), which is a
+      # Java 21 SequencedCollection API. On 17 it dies with NoSuchMethodError
+      # while analysing image_picker_android.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - uses: subosito/flutter-action@v2
         with:
@@ -70,6 +73,14 @@ jobs:
           s = s.replace('applicationId "com.shararat.shararat"', 'applicationId "com.shararat.app"')
           g.write_text(s)
           print(f"patched {g}")
+
+          # Lint adds nothing to a demo APK and its vital-release chain is a
+          # common source of crashes in plugin modules. Turning it off on the
+          # app also skips lintVitalAnalyzeRelease in every library module.
+          if "checkReleaseBuilds" not in s:
+              s += '\n\nandroid {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n}\n'
+              g.write_text(s)
+              print("disabled release lint")
 
           m = pathlib.Path("android/app/src/main/AndroidManifest.xml")
           x = m.read_text()
