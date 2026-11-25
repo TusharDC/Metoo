@@ -1,0 +1,89 @@
+name: Deploy web to GitHub Pages
+
+# Builds the Flutter web app in demo mode and publishes it to GitHub Pages.
+#
+# One-time setup in the repo: Settings -> Pages -> Build and deployment ->
+# Source: "GitHub Actions". Then this runs on every push to main.
+#
+# The site lands at https://<owner>.github.io/<repo>/
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: "Demo build (no Supabase needed)"
+        type: boolean
+        default: true
+      supabase_url:
+        description: "Supabase URL (only for a live build)"
+        required: false
+      supabase_anon_key:
+        description: "Supabase anon key (only for a live build)"
+        required: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a newer push supersede an in-flight deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # Pages serves the site from /<repo>/, so the base href must match or
+      # every asset 404s.
+      - name: Build web
+        run: |
+          BASE="/${GITHUB_REPOSITORY#*/}/"
+          echo "base href: $BASE"
+          if [ "${{ inputs.demo }}" = "false" ]; then
+            flutter build web --release --base-href "$BASE" \
+              --dart-define=SUPABASE_URL='${{ inputs.supabase_url }}' \
+              --dart-define=SUPABASE_ANON_KEY='${{ inputs.supabase_anon_key }}'
+          else
+            flutter build web --release --base-href "$BASE" \
+              --dart-define=DEMO=true
+          fi
+
+      # Pages' static host has no SPA rewrite; a copy of index.html as 404.html
+      # makes deep links resolve to the app instead of a GitHub error page.
+      - name: Add SPA fallback
+        run: cp build/web/index.html build/web/404.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
