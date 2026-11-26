@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 
 import 'session.dart';
 import '../features/auth/welcome_screen.dart';
-import '../features/auth/otp_screen.dart';
 import '../features/auth/onboarding_screen.dart';
 import '../features/shell/home_shell.dart';
 import '../features/chat/chat_room_screen.dart';
@@ -19,7 +18,7 @@ GoRouter buildRouter(AppSession session) {
     redirect: (context, state) {
       if (!session.ready) return null; // wait for bootstrap (splash shown)
       final loc = state.matchedLocation;
-      final authRoutes = loc == '/welcome' || loc == '/otp';
+      final authRoutes = loc == '/welcome';
 
       if (!session.signedIn) {
         return authRoutes ? null : '/welcome';
@@ -37,10 +36,6 @@ GoRouter buildRouter(AppSession session) {
     routes: [
       GoRoute(path: '/', builder: (_, __) => const _Splash()),
       GoRoute(path: '/welcome', builder: (_, __) => const WelcomeScreen()),
-      GoRoute(
-        path: '/otp',
-        builder: (_, s) => OtpScreen(args: s.extra as OtpArgs),
-      ),
       GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingScreen()),
 
       // main tabbed app
