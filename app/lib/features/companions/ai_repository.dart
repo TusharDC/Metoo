@@ -4,6 +4,7 @@ import '../../core/supabase.dart';
 import '../../shared/models/ai_character.dart';
 import '../../shared/models/ai_match.dart';
 import '../../shared/models/ai_message.dart';
+import '../../shared/models/user_status.dart';
 
 class AiReply {
   final String text;
@@ -31,12 +32,21 @@ class AiRepository {
 
   /// Record a swipe. like/superlike silently queues a match that reveals later
   /// in the Matches tab (3-5 min, superlike faster). No instant popup.
-  Future<void> swipe(int characterId, String action) async {
-    if (AppConfig.demo) {
-      _demo.swipe(characterId, action);
-      return;
-    }
-    await Db.client.rpc('ai_swipe', params: {'p_character_id': characterId, 'p_action': action});
+  /// The server decides whether this swipe is allowed and whether it matches.
+  /// A refusal comes back as `blocked`, not an exception.
+  Future<SwipeOutcome> swipe(int characterId, String action) async {
+    final res = AppConfig.demo
+        ? _demo.swipe(characterId, action)
+        : await Db.client.rpc('ai_swipe',
+            params: {'p_character_id': characterId, 'p_action': action});
+    return SwipeOutcome.fromJson((res as Map).cast<String, dynamic>());
+  }
+
+  /// Swipes and messages remaining, for display only.
+  Future<UserStatus> status() async {
+    final res =
+        AppConfig.demo ? _demo.status() : await Db.client.rpc('get_my_status');
+    return UserStatus.fromJson((res as Map).cast<String, dynamic>());
   }
 
   Future<void> resetSwipes() async {
@@ -79,6 +89,9 @@ class AiRepository {
   Future<AiReply> send(String conversationId, String message, {bool wantVoice = false}) async {
     if (AppConfig.demo) {
       final d = await _demo.send(conversationId, message);
+      if (d['error'] == 'payment_required') {
+        throw OutOfMessagesException(d['reason'] as String? ?? 'out_of_messages');
+      }
       return AiReply(d['text'] as String, null);
     }
     final res = await Db.client.functions.invoke('ai-chat', body: {
@@ -86,7 +99,12 @@ class AiRepository {
       'message': message,
       'want_voice': wantVoice,
     });
-    final data = res.data as Map<String, dynamic>;
+    final data = (res.data as Map).cast<String, dynamic>();
+    // 402: the free message allowance is spent. Surface it as its own type so
+    // the UI can show the paywall rather than a generic failure.
+    if (res.status == 402 || data['error'] == 'payment_required') {
+      throw OutOfMessagesException(data['reason'] as String? ?? 'out_of_messages');
+    }
     if (data['error'] != null) throw Exception(data['error']);
     return AiReply(data['text'] as String? ?? '…', data['voice_path'] as String?);
   }

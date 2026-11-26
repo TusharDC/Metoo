@@ -67,6 +67,9 @@ class DemoStore {
   void resetSwipes() {
     _swipes.clear();
     _convs.clear();
+    _swipesUsed = 0;
+    _likesUsed = 0;
+    _messagesUsed = 0;
     _seed();
   }
 
@@ -75,22 +78,53 @@ class DemoStore {
   Duration _revealDelay(String action) =>
       action == 'superlike' ? const Duration(seconds: 8) : const Duration(seconds: 25);
 
-  /// Mirrors `ai_swipe`: pass is recorded, like/superlike queues a conversation
-  /// that reveals in the Matches tab after a delay.
-  void swipe(int characterId, String action) {
+  // Same funnel numbers as app_config in 0011_funnel.sql, so a demo build
+  // behaves like the real thing.
+  static const _freeSwipes = 10;
+  static const _freeMessages = 10;
+  static const _matchPositions = [3, 8];
+
+  int _swipesUsed = 0;
+  int _likesUsed = 0;
+  int _messagesUsed = 0;
+
+  /// Mirrors `ai_swipe`: refuses once the free swipes are spent, and matches
+  /// only on the configured like-numbers.
+  Map<String, dynamic> swipe(int characterId, String action) {
+    if (_swipesUsed >= _freeSwipes) {
+      return {'queued': false, 'blocked': true, 'reason': 'out_of_swipes', 'swipes_left': 0};
+    }
     _swipes[characterId] = action;
-    if (action == 'pass') return;
+    _swipesUsed++;
+    if (action != 'pass') _likesUsed++;
+    final left = (_freeSwipes - _swipesUsed).clamp(0, _freeSwipes);
+
+    if (action == 'pass' || !_matchPositions.contains(_likesUsed)) {
+      return {'queued': false, 'blocked': false, 'swipes_left': left};
+    }
     final existing = _convs.values.where((c) => c.characterId == characterId);
-    if (existing.isNotEmpty) return;
-    final c = _characters.firstWhere((x) => x['id'] == characterId);
-    final conv = _Conv(
-      id: 'demo-conv-${c['slug']}',
-      characterId: characterId,
-      mood: c['default_mood'] as String,
-      revealedAt: DateTime.now().add(_revealDelay(action)),
-    );
-    _convs[conv.id] = conv;
+    if (existing.isEmpty) {
+      final c = _characters.firstWhere((x) => x['id'] == characterId);
+      final conv = _Conv(
+        id: 'demo-conv-${c['slug']}',
+        characterId: characterId,
+        mood: c['default_mood'] as String,
+        revealedAt: DateTime.now().add(_revealDelay(action)),
+      );
+      _convs[conv.id] = conv;
+    }
+    return {'queued': true, 'blocked': false, 'swipes_left': left};
   }
+
+  /// Mirrors `get_my_status`.
+  Map<String, dynamic> status() => {
+        'swipes_left': (_freeSwipes - _swipesUsed).clamp(0, _freeSwipes),
+        'messages_left': (_freeMessages - _messagesUsed).clamp(0, _freeMessages),
+        'matches_made': _convs.length,
+        'credits': 0,
+        'subscribed_until': null,
+        'is_paid': false,
+      };
 
   // ------------------------------------------------------------------- matches
 
@@ -156,6 +190,10 @@ class DemoStore {
   Future<Map<String, dynamic>> send(String conversationId, String message) async {
     final conv = _convs[conversationId];
     if (conv == null) return {'text': '…'};
+    if (_messagesUsed >= _freeMessages) {
+      return {'error': 'payment_required', 'reason': 'out_of_messages'};
+    }
+    _messagesUsed++;
     conv.messages.add(_Msg('user', 'text', message, null, DateTime.now()));
     await Future<void>.delayed(const Duration(milliseconds: 1100));
     final text = demoReplies[_replyCursor++ % demoReplies.length];

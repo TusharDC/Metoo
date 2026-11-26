@@ -3,11 +3,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config.dart';
 import '../../shared/models/ai_character.dart';
+import '../../shared/models/user_status.dart';
 import '../../shared/widgets/app_image.dart';
+import '../paywall/paywall_sheet.dart';
 import 'ai_repository.dart';
 
 final _aiFeedProvider =
     FutureProvider.autoDispose<List<AiCharacter>>((ref) => AiRepository().discoverFeed());
+
+final _statusProvider =
+    FutureProvider.autoDispose<UserStatus>((ref) => AiRepository().status());
 
 /// The "AI Tinder" deck: swipe through AI girls. Right-swipe = instant match.
 class AiDiscoverScreen extends ConsumerStatefulWidget {
@@ -35,6 +40,21 @@ class _AiDiscoverScreenState extends ConsumerState<AiDiscoverScreen> {
       appBar: AppBar(
         title: Text(AppConfig.demo ? 'Discover · DEMO' : 'Discover'),
         actions: [
+          // Swipes remaining. Display only — the server is the authority.
+          Consumer(builder: (_, r, __) {
+            final s = r.watch(_statusProvider).valueOrNull;
+            if (s == null || !s.showSwipeCounter) return const SizedBox.shrink();
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Chip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: const Icon(Icons.bolt, size: 16),
+                  label: Text('${s.swipesLeft}'),
+                ),
+              ),
+            );
+          }),
           IconButton(
             tooltip: 'Reset deck',
             icon: const Icon(Icons.refresh),
@@ -126,7 +146,27 @@ class _AiDiscoverScreenState extends ConsumerState<AiDiscoverScreen> {
 
   Future<void> _handle(AiCharacter c, String action) async {
     setState(() => _deck.removeWhere((x) => x.id == c.id));
-    if (action != 'pass' && mounted) {
+
+    SwipeOutcome? outcome;
+    try {
+      outcome = await _repo.swipe(c.id, action);
+    } catch (_) {
+      // Network blip: the swipe is idempotent server-side, so let it go.
+    }
+    if (!mounted) return;
+
+    // Out of free swipes: put the card back and show the paywall, so the deck
+    // never silently stops working.
+    if (outcome != null && outcome.blocked) {
+      setState(() {
+        if (!_deck.any((x) => x.id == c.id)) _deck.add(c);
+      });
+      ref.invalidate(_statusProvider);
+      await showPaywall(context, reason: PaywallReason.outOfSwipes);
+      return;
+    }
+
+    if (action != 'pass') {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(
@@ -136,9 +176,8 @@ class _AiDiscoverScreenState extends ConsumerState<AiDiscoverScreen> {
               : 'Liked ${c.name} 💕'),
         ));
     }
-    try {
-      await _repo.swipe(c.id, action); // match reveals later in Matches tab
-    } catch (_) {/* idempotent server-side */}
+
+    ref.invalidate(_statusProvider);
     if (_deck.length <= 2) ref.invalidate(_aiFeedProvider);
   }
 }

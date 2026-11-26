@@ -5,7 +5,9 @@ import 'package:video_player/video_player.dart';
 import '../../core/supabase.dart';
 import '../../shared/models/ai_character.dart';
 import '../../shared/models/ai_message.dart';
+import '../../shared/models/user_status.dart';
 import '../../shared/widgets/app_image.dart';
+import '../paywall/paywall_sheet.dart';
 import 'ai_repository.dart';
 
 /// Chat with an AI character: text, voice-note replies, on-demand photos/videos,
@@ -88,6 +90,22 @@ class _AiChatScreenState extends State<AiChatScreen> {
         content: reply.text, mediaPath: reply.voicePath,
         createdAt: DateTime.now(),
       ));
+    } on OutOfMessagesException catch (e) {
+      // Free allowance spent. Drop the unsent message back into the box so it
+      // isn't lost, and offer the paywall.
+      if (mounted) {
+        setState(() {
+          _messages.removeWhere((m) => m.id.startsWith('local-') && m.content == text);
+          _input.text = text;
+        });
+        await showPaywall(
+          context,
+          reason: e.reason == 'daily_cap'
+              ? PaywallReason.dailyCap
+              : PaywallReason.outOfMessages,
+          characterName: widget.character?.name,
+        );
+      }
     } catch (e) {
       _snack('Could not send: $e');
     } finally {
