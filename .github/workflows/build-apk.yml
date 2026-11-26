@@ -11,15 +11,14 @@ on:
   workflow_dispatch:
     inputs:
       demo:
-        description: "Demo build (no Supabase needed)"
+        description: "Demo build (offline fixtures, no Supabase)"
         type: boolean
-        default: true
-      supabase_url:
-        description: "Supabase URL (only for a live build)"
-        required: false
-      supabase_anon_key:
-        description: "Supabase anon key (only for a live build)"
-        required: false
+        default: false
+
+env:
+  # Publishable key: designed to ship in clients, constrained by RLS.
+  SUPABASE_URL: https://qcoxiqtipxvntadztjbc.supabase.co
+  SUPABASE_ANON_KEY: sb_publishable_DfT2a3laN9zB12c_pHIAbw_EMabrj0y
 
 jobs:
   build:
@@ -119,21 +118,21 @@ jobs:
 
       - name: Build APK
         run: |
-          if [ "${{ inputs.demo }}" = "false" ]; then
-            echo "Building LIVE (Supabase)"
-            flutter build apk --release \
-              --dart-define=SUPABASE_URL='${{ inputs.supabase_url }}' \
-              --dart-define=SUPABASE_ANON_KEY='${{ inputs.supabase_anon_key }}'
-          else
+          if [ "${{ inputs.demo }}" = "true" ]; then
             echo "Building DEMO (no backend)"
             flutter build apk --release --dart-define=DEMO=true
+          else
+            echo "Building LIVE against ${SUPABASE_URL}"
+            flutter build apk --release \
+              --dart-define=SUPABASE_URL="${SUPABASE_URL}" \
+              --dart-define=SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY}"
           fi
 
       - name: Rename for clarity
         run: |
           mkdir -p out
           cp build/app/outputs/flutter-apk/app-release.apk \
-             out/shararat-${{ inputs.demo == 'false' && 'live' || 'demo' }}.apk
+             out/shararat-${{ inputs.demo == 'true' && 'demo' || 'live' }}.apk
           ls -lh out
 
       - uses: actions/upload-artifact@v4

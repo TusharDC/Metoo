@@ -12,15 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       demo:
-        description: "Demo build (no Supabase needed)"
+        description: "Demo build (offline fixtures, no Supabase)"
         type: boolean
-        default: true
-      supabase_url:
-        description: "Supabase URL (only for a live build)"
-        required: false
-      supabase_anon_key:
-        description: "Supabase anon key (only for a live build)"
-        required: false
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +25,11 @@ env:
   # Set to the custom domain to serve the site at the root of it. Leave empty
   # to serve from https://<owner>.github.io/<repo>/ instead.
   CUSTOM_DOMAIN: ruderthanrude.com
+  # Safe to keep in the repo: the publishable key is designed to ship in
+  # clients and is constrained by row-level security. The secret key is not
+  # here and never should be.
+  SUPABASE_URL: https://qcoxiqtipxvntadztjbc.supabase.co
+  SUPABASE_ANON_KEY: sb_publishable_DfT2a3laN9zB12c_pHIAbw_EMabrj0y
 
 # Let a newer push supersede an in-flight deploy.
 concurrency:
@@ -64,13 +63,15 @@ jobs:
         run: |
           if [ -n "${CUSTOM_DOMAIN}" ]; then BASE="/"; else BASE="/${GITHUB_REPOSITORY#*/}/"; fi
           echo "base href: $BASE"
-          if [ "${{ inputs.demo }}" = "false" ]; then
-            flutter build web --release --base-href "$BASE" \
-              --dart-define=SUPABASE_URL='${{ inputs.supabase_url }}' \
-              --dart-define=SUPABASE_ANON_KEY='${{ inputs.supabase_anon_key }}'
+          # Live against Supabase unless a demo build was explicitly asked for.
+          if [ "${{ inputs.demo }}" = "true" ]; then
+            echo "building DEMO (no backend)"
+            flutter build web --release --base-href "$BASE" --dart-define=DEMO=true
           else
+            echo "building LIVE against ${SUPABASE_URL}"
             flutter build web --release --base-href "$BASE" \
-              --dart-define=DEMO=true
+              --dart-define=SUPABASE_URL="${SUPABASE_URL}" \
+              --dart-define=SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY}"
           fi
 
       # Pages' static host has no SPA rewrite; a copy of index.html as 404.html
