@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shararat Admin</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --fg:#e8eaed; --muted:#9aa3b2; --accent:#E91E63; --ok:#2ecc71; --warn:#f39c12;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       background:var(--bg);color:var(--fg)}
+  header{display:flex;align-items:center;gap:16px;padding:14px 20px;
+         border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:700}
+  header h1 span{color:var(--accent)}
+  nav{display:flex;gap:4px;flex-wrap:wrap}
+  nav button{background:none;border:0;color:var(--muted);padding:7px 13px;border-radius:8px;
+             cursor:pointer;font-size:14px}
+  nav button:hover{background:var(--panel2);color:var(--fg)}
+  nav button.on{background:var(--accent);color:#fff}
+  main{padding:20px;max-width:1400px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:0}
+  input,textarea,select{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+        border-radius:8px;padding:8px 10px;font:inherit;width:100%}
+  textarea{min-height:90px;resize:vertical}
+  button.btn{background:var(--accent);border:0;color:#fff;padding:9px 16px;border-radius:8px;
+             cursor:pointer;font-weight:600}
+  button.btn.ghost{background:var(--panel2);color:var(--fg);border:1px solid var(--line)}
+  button.btn.sm{padding:5px 10px;font-size:12px;font-weight:500}
+  .grid{display:grid;gap:14px}
+  .stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .stat{background:var(--panel2);border-radius:10px;padding:14px}
+  .stat .n{font-size:26px;font-weight:700}
+  .stat .l{color:var(--muted);font-size:12px;margin-top:2px}
+  .form{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill.on{background:rgba(46,204,113,.16);color:var(--ok)}
+  .pill.off{background:rgba(154,163,178,.16);color:var(--muted)}
+  .swatch{width:16px;height:16px;border-radius:4px;display:inline-block;vertical-align:-3px;
+          border:1px solid var(--line)}
+  .login{max-width:380px;margin:14vh auto;text-align:center}
+  .msg{padding:10px 12px;border-radius:8px;margin-bottom:12px;display:none}
+  .msg.err{display:block;background:rgba(231,76,60,.14);color:#ff8f82}
+  .msg.ok{display:block;background:rgba(46,204,113,.14);color:var(--ok)}
+  .bubble{padding:7px 11px;border-radius:12px;margin:3px 0;max-width:70%;white-space:pre-wrap}
+  .bubble.user{background:var(--accent);color:#fff;margin-left:auto}
+  .bubble.assistant{background:var(--panel2)}
+  .muted{color:var(--muted)}
+  .hide{display:none}
+</style>
+</head>
+<body>
+
+<div id="login" class="login">
+  <h1>Shararat <span style="color:#E91E63">Admin</span></h1>
+  <p class="muted">Enter the admin password.</p>
+  <div id="loginMsg" class="msg"></div>
+  <input id="token" type="password" placeholder="Admin password" autocomplete="current-password">
+  <div style="height:10px"></div>
+  <button class="btn" style="width:100%" onclick="login()">Sign in</button>
+</div>
+
+<div id="app" class="hide">
+  <header>
+    <h1>Shararat <span>Admin</span></h1>
+    <nav>
+      <button data-tab="stats" class="on" onclick="go('stats')">Stats</button>
+      <button data-tab="girls" onclick="go('girls')">Girls</button>
+      <button data-tab="users" onclick="go('users')">Users</button>
+      <button data-tab="convos" onclick="go('convos')">Conversations</button>
+      <button data-tab="reports" onclick="go('reports')">Reports</button>
+      <button data-tab="config" onclick="go('config')">Funnel</button>
+    </nav>
+    <div style="margin-left:auto"><button class="btn ghost sm" onclick="logout()">Sign out</button></div>
+  </header>
+  <main>
+    <div id="msg" class="msg"></div>
+    <div id="view"></div>
+  </main>
+</div>
+
+<script>
+// The panel holds no keys. Every call goes to the admin-api Edge Function,
+// which verifies the password server-side and uses the service-role key there.
+const FN = "https://qcoxiqtipxvntadztjbc.supabase.co/functions/v1/admin-api";
+let TOKEN = sessionStorage.getItem("shararat_admin") || "";
+
+async function api(action, args = {}) {
+  const r = await fetch(FN, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-admin-token": TOKEN },
+    body: JSON.stringify({ action, ...args }),
+  });
+  const data = await r.json().catch(() => ({ error: "bad response" }));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function note(text, ok = false) {
+  const m = document.getElementById("msg");
+  m.textContent = text;
+  m.className = "msg " + (ok ? "ok" : "err");
+  if (ok) setTimeout(() => (m.className = "msg"), 2500);
+}
+
+async function login() {
+  TOKEN = document.getElementById("token").value.trim();
+  const m = document.getElementById("loginMsg");
+  try {
+    await api("stats");
+    sessionStorage.setItem("shararat_admin", TOKEN);
+    document.getElementById("login").classList.add("hide");
+    document.getElementById("app").classList.remove("hide");
+    go("stats");
+  } catch (e) {
+    m.textContent = e.message === "unauthorized" ? "Wrong password." : e.message;
+    m.className = "msg err";
+  }
+}
+function logout() {
+  sessionStorage.removeItem("shararat_admin");
+  location.reload();
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function go(tab) {
+  document.querySelectorAll("nav button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.tab === tab));
+  ({ stats: viewStats, girls: viewGirls, users: viewUsers,
+     convos: viewConvos, reports: viewReports, config: viewConfig })[tab]();
+}
+const view = (html) => (document.getElementById("view").innerHTML = html);
+
+// ------------------------------------------------------------------- stats
+async function viewStats() {
+  view("<p class='muted'>Loading…</p>");
+  try {
+    const { stats, top_characters } = await api("stats");
+    const labels = {
+      users: "Users", users_last_7d: "New (7 days)", conversations: "Conversations",
+      messages: "Messages", messages_last_24h: "Messages (24h)",
+      matches_revealed: "Matches revealed", paying_users: "Paying users",
+      active_characters: "Active girls",
+    };
+    view(`
+      <div class="card"><div class="grid stats">
+        ${Object.entries(stats).map(([k, v]) =>
+          `<div class="stat"><div class="n">${v}</div><div class="l">${labels[k] || k}</div></div>`).join("")}
+      </div></div>
+      <div class="card">
+        <h3 style="margin-top:0">Most popular</h3>
+        ${top_characters.length ? `<table><tr><th>Character</th><th>Conversations</th></tr>
+          ${top_characters.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.conversations}</td></tr>`).join("")}
+        </table>` : "<p class='muted'>No conversations yet.</p>"}
+      </div>`);
+  } catch (e) { note(e.message); }
+}
+
+// ------------------------------------------------------------------- girls
+let CHARS = [];
+async function viewGirls() {
+  view("<p class='muted'>Loading…</p>");
+  try {
+    CHARS = (await api("list_characters")).characters;
+    view(`
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h3 style="margin:0">Girls (${CHARS.length})</h3>
+          <button class="btn" onclick="editGirl(null)">+ Add girl</button>
+        </div>
+      </div>
+      <div class="card"><table>
+        <tr><th></th><th>Name</th><th>Personality</th><th>Mood</th><th>Order</th><th>Status</th><th></th></tr>
+        ${CHARS.map((c) => `<tr>
+          <td><span class="swatch" style="background:${esc(c.accent_color)}"></span></td>
+          <td><b>${esc(c.name)}</b><div class="muted">${esc(c.slug)}</div></td>
+          <td>${esc(c.personality)}</td>
+          <td>${esc(c.default_mood)}</td>
+          <td>${c.sort_order}</td>
+          <td><span class="pill ${c.is_active ? "on" : "off"}">${c.is_active ? "active" : "hidden"}</span>
+              ${c.avatar_path ? "" : "<div class='muted' style='font-size:11px'>no photo</div>"}</td>
+          <td class="row">
+            <button class="btn sm ghost" onclick="editGirl('${esc(c.slug)}')">Edit</button>
+            <button class="btn sm ghost" onclick="toggleGirl(${c.id},${!c.is_active})">${c.is_active ? "Hide" : "Show"}</button>
+          </td></tr>`).join("")}
+      </table></div>
+      <div id="editor"></div>`);
+  } catch (e) { note(e.message); }
+}
+
+function editGirl(slug) {
+  const c = CHARS.find((x) => x.slug === slug) || {
+    slug: "", name: "", tagline: "", bio: "", personality: "", system_prompt: "",
+    accent_color: "#E91E63", default_mood: "playful", traits: [], sort_order: 99, is_active: true,
+  };
+  document.getElementById("editor").innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0">${slug ? "Edit " + esc(c.name) : "New girl"}</h3>
+      <div class="grid form">
+        <div><label>Slug (no spaces, permanent)</label>
+          <input id="f_slug" value="${esc(c.slug)}" ${slug ? "disabled" : ""}></div>
+        <div><label>Name</label><input id="f_name" value="${esc(c.name)}"></div>
+        <div><label>Tagline</label><input id="f_tagline" value="${esc(c.tagline)}"></div>
+        <div><label>Bio (e.g. "23 • Delhi")</label><input id="f_bio" value="${esc(c.bio)}"></div>
+        <div><label>Personality</label><input id="f_personality" value="${esc(c.personality)}"></div>
+        <div><label>Default mood</label><input id="f_mood" value="${esc(c.default_mood)}"></div>
+        <div><label>Accent colour</label><input id="f_accent" value="${esc(c.accent_color)}"></div>
+        <div><label>Sort order</label><input id="f_order" type="number" value="${c.sort_order}"></div>
+        <div><label>Traits (comma separated)</label>
+          <input id="f_traits" value="${esc((c.traits || []).join(", "))}"></div>
+        <div><label>Voice ID (ElevenLabs, optional)</label>
+          <input id="f_voice" value="${esc(c.voice_id)}"></div>
+      </div>
+      <div style="height:12px"></div>
+      <label>System prompt — how she talks and who she is</label>
+      <textarea id="f_prompt">${esc(c.system_prompt)}</textarea>
+      <div style="height:12px"></div>
+      <label>Avatar ${c.avatar_path ? `(current: ${esc(c.avatar_path)})` : "(none yet)"}</label>
+      <input id="f_avatar" type="file" accept="image/*">
+      <div style="height:14px"></div>
+      <div class="row">
+        <button class="btn" onclick="saveGirl('${esc(slug || "")}')">Save</button>
+        <button class="btn ghost" onclick="document.getElementById('editor').innerHTML=''">Cancel</button>
+      </div>
+    </div>`;
+  document.getElementById("editor").scrollIntoView({ behavior: "smooth" });
+}
+
+async function saveGirl(existing) {
+  const v = (id) => document.getElementById(id).value.trim();
+  const character = {
+    slug: existing || v("f_slug"), name: v("f_name"), tagline: v("f_tagline"),
+    bio: v("f_bio"), personality: v("f_personality"), system_prompt: v("f_prompt"),
+    accent_color: v("f_accent") || "#E91E63", default_mood: v("f_mood") || "playful",
+    voice_id: v("f_voice") || null,
+    traits: v("f_traits") ? v("f_traits").split(",").map((s) => s.trim()).filter(Boolean) : [],
+    sort_order: Number(v("f_order") || 99), is_active: true,
+  };
+  if (!character.slug || !character.name) return note("Slug and name are required.");
+  try {
+    await api("upsert_character", { character });
+    const file = document.getElementById("f_avatar").files[0];
+    if (file) {
+      const b64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result).split(",")[1]);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      await api("upload_avatar", {
+        slug: character.slug, data_base64: b64,
+        ext: file.type.includes("png") ? "png" : "jpg",
+      });
+    }
+    note("Saved.", true);
+    viewGirls();
+  } catch (e) { note(e.message); }
+}
+
+async function toggleGirl(id, active) {
+  try { await api("set_character_active", { id, is_active: active }); viewGirls(); }
+  catch (e) { note(e.message); }
+}
+
+// ------------------------------------------------------------------- users
+async function viewUsers() {
+  view("<p class='muted'>Loading…</p>");
+  try {
+    const { users } = await api("list_users", { limit: 100 });
+    view(`<div class="card"><h3 style="margin-top:0">Users (${users.length})</h3>
+      <table><tr><th>Name</th><th>Joined</th><th>Swipes</th><th>Messages</th>
+                 <th>Matches</th><th>Credits</th><th></th></tr>
+      ${users.map((u) => `<tr>
+        <td><b>${esc(u.display_name)}</b>${u.is_banned ? ' <span class="pill off">banned</span>' : ""}
+            <div class="muted" style="font-size:11px">${esc(u.id).slice(0, 8)}…</div></td>
+        <td>${new Date(u.created_at).toLocaleDateString()}</td>
+        <td>${u.quota?.swipes_used ?? 0}</td>
+        <td>${u.quota?.messages_used ?? 0}</td>
+        <td>${u.quota?.matches_made ?? 0}</td>
+        <td>${u.entitlement?.message_credits ?? 0}</td>
+        <td class="row">
+          <button class="btn sm ghost" onclick="gift('${u.id}')">Gift 50</button>
+          <button class="btn sm ghost" onclick="ban('${u.id}',${!u.is_banned})">${u.is_banned ? "Unban" : "Ban"}</button>
+        </td></tr>`).join("")}
+      </table></div>`);
+  } catch (e) { note(e.message); }
+}
+async function gift(user_id) {
+  try { await api("grant_entitlement", { user_id, credits: 50 }); note("50 credits added.", true); viewUsers(); }
+  catch (e) { note(e.message); }
+}
+async function ban(user_id, is_banned) {
+  try { await api("set_user_banned", { user_id, is_banned }); viewUsers(); }
+  catch (e) { note(e.message); }
+}
+
+// ----------------------------------------------------------- conversations
+async function viewConvos() {
+  view("<p class='muted'>Loading…</p>");
+  try {
+    const { conversations } = await api("list_conversations", { limit: 100 });
+    view(`<div class="card"><h3 style="margin-top:0">Conversations (${conversations.length})</h3>
+      <table><tr><th>User</th><th>Character</th><th>Mood</th><th>Last message</th><th></th></tr>
+      ${conversations.map((c) => `<tr>
+        <td>${esc(c.profiles?.display_name || "—")}</td>
+        <td>${esc(c.ai_characters?.name || c.character_id)}</td>
+        <td>${esc(c.mood)}</td>
+        <td>${c.last_message_at ? new Date(c.last_message_at).toLocaleString() : "<span class='muted'>never</span>"}</td>
+        <td><button class="btn sm ghost" onclick="transcript('${c.id}')">Read</button></td>
+      </tr>`).join("")}
+      </table></div><div id="tx"></div>`);
+  } catch (e) { note(e.message); }
+}
+
+async function transcript(id) {
+  try {
+    const { messages, memories } = await api("get_transcript", { conversation_id: id });
+    document.getElementById("tx").innerHTML = `
+      <div class="card">
+        <h3 style="margin-top:0">Transcript</h3>
+        ${memories?.length ? `<p class="muted"><b>She remembers:</b> ${memories.map((m) => esc(m.content)).join(" · ")}</p>` : ""}
+        <div style="display:flex;flex-direction:column">
+          ${messages.map((m) => `<div class="bubble ${m.role}">${esc(m.content || "[" + m.kind + "]")}</div>`).join("")}
+        </div>
+      </div>`;
+    document.getElementById("tx").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { note(e.message); }
+}
+
+// ----------------------------------------------------------------- reports
+async function viewReports() {
+  view("<p class='muted'>Loading…</p>");
+  try {
+    const { reports } = await api("list_reports");
+    view(`<div class="card"><h3 style="margin-top:0">Reports (${reports.length})</h3>
+      ${reports.length ? `<table><tr><th>When</th><th>Reason</th><th>Details</th><th>Status</th><th></th></tr>
+      ${reports.map((r) => `<tr>
+        <td>${new Date(r.created_at).toLocaleDateString()}</td>
+        <td>${esc(r.reason)}</td><td>${esc(r.details)}</td>
+        <td><span class="pill ${r.status === "pending" ? "off" : "on"}">${esc(r.status)}</span></td>
+        <td class="row">
+          <button class="btn sm ghost" onclick="setReport('${r.id}','actioned')">Action</button>
+          <button class="btn sm ghost" onclick="setReport('${r.id}','dismissed')">Dismiss</button>
+        </td></tr>`).join("")}</table>` : "<p class='muted'>Nothing reported.</p>"}
+      </div>`);
+  } catch (e) { note(e.message); }
+}
+async function setReport(id, status) {
+  try { await api("set_report_status", { id, status }); viewReports(); }
+  catch (e) { note(e.message); }
+}
+
+// ------------------------------------------------------------------ config
+async function viewConfig() {
+  view("<p class='muted'>Loading…</p>");
+  try {
+    const { config } = await api("get_config");
+    view(`<div class="card">
+      <h3 style="margin-top:0">Funnel settings</h3>
+      <p class="muted">Changes take effect immediately for new swipes and messages.</p>
+      <table><tr><th>Setting</th><th>Value</th><th>What it does</th><th></th></tr>
+      ${config.map((c) => `<tr>
+        <td><b>${esc(c.key)}</b></td>
+        <td><input id="cfg_${esc(c.key)}" value='${esc(JSON.stringify(c.value))}' style="max-width:150px"></td>
+        <td class="muted">${esc(c.note)}</td>
+        <td><button class="btn sm" onclick="saveCfg('${esc(c.key)}')">Save</button></td>
+      </tr>`).join("")}</table></div>`);
+  } catch (e) { note(e.message); }
+}
+async function saveCfg(key) {
+  try {
+    const raw = document.getElementById("cfg_" + key).value;
+    await api("set_config", { key, value: JSON.parse(raw) });
+    note("Saved.", true);
+  } catch (e) { note(e.message.includes("JSON") ? "Value must be valid JSON (e.g. 10 or [3, 8])" : e.message); }
+}
+
+// Resume an existing session.
+if (TOKEN) {
+  api("stats").then(() => {
+    document.getElementById("login").classList.add("hide");
+    document.getElementById("app").classList.remove("hide");
+    go("stats");
+  }).catch(() => sessionStorage.removeItem("shararat_admin"));
+}
+</script>
+</body>
+</html>

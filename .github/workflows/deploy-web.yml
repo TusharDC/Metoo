@@ -79,6 +79,13 @@ jobs:
       - name: Add SPA fallback
         run: cp build/web/index.html build/web/404.html
 
+      # Static admin panel, served at /admin. It ships no keys: every call goes
+      # to the admin-api Edge Function, which checks the password server-side.
+      - name: Publish the admin panel
+        run: |
+          mkdir -p build/web/admin
+          cp web_admin/index.html build/web/admin/index.html
+
       # Pages needs a CNAME file in the artifact or it drops the custom domain
       # on each deploy.
       - name: Write CNAME
